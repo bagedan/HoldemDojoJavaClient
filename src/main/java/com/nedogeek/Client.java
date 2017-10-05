@@ -1,35 +1,77 @@
 package com.nedogeek;
 
 
-import org.eclipse.jetty.websocket.*;
+import com.google.common.collect.ImmutableMap;
+import org.eclipse.jetty.websocket.WebSocketClient;
+import org.eclipse.jetty.websocket.WebSocketClientFactory;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import poki.preflop.PreFlopGame;
 
 import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 
 public class Client {
-    private static final String userName = "someUser";
+    private static final String userName = "bogdan";
     private static final String password = "somePassword";
 
-    private static final String SERVER = "ws://77.47.200.184:8080/ws";
+    private static final String SERVER = "ws://localhost:8080/ws";
     private org.eclipse.jetty.websocket.WebSocket.Connection connection;
 
     enum Commands {
         Check, Call, Rise, Fold, AllIn
     }
 
-    class Card {
+    public class Card {
         final String suit;
         final String value;
+
+        private Map<String, Integer> suitMap = ImmutableMap.of(
+                "♣", poki.handranking.Card.SUIT_CLUBS,
+                "♦", poki.handranking.Card.SUIT_DIAMONDS,
+                "♥", poki.handranking.Card.SUIT_HEARTS,
+                "♠", poki.handranking.Card.SUIT_SPADES
+        );
+
+        private Map<String, Integer> valuesMap = ImmutableMap.<String, Integer>builder()
+                .put("2", poki.handranking.Card.RANK_2)
+                .put("3", poki.handranking.Card.RANK_3)
+                .put("4", poki.handranking.Card.RANK_4)
+                .put("5", poki.handranking.Card.RANK_5)
+                .put("6", poki.handranking.Card.RANK_6)
+                .put("7", poki.handranking.Card.RANK_7)
+                .put("8", poki.handranking.Card.RANK_8)
+                .put("9", poki.handranking.Card.RANK_9)
+                .put("10", poki.handranking.Card.RANK_10)
+                .put("J", poki.handranking.Card.RANK_JACK)
+                .put("Q", poki.handranking.Card.RANK_QUEEN)
+                .put("K", poki.handranking.Card.RANK_KING)
+                .put("A", poki.handranking.Card.RANK_ACE)
+                .build();
+
 
         Card(String suit, String value) {
             this.suit = suit;
             this.value = value;
+        }
+
+        poki.handranking.Card toPokiCard() {
+            poki.handranking.Card pokiCard = new poki.handranking.Card(suitMap.get(suit), valuesMap.get(value));
+            System.out.printf("Mapped %s:%s to %s", suit, value, pokiCard);
+            return pokiCard;
+        }
+
+        @Override
+        public String toString() {
+            return "Card{" +
+                    "value='" + value + '\'' +
+                    ", suit='" + suit + '\'' +
+                    '}';
         }
     }
 
@@ -39,30 +81,30 @@ public class Client {
         try {
             factory.start();
 
-        WebSocketClient client = factory.newWebSocketClient();
+            WebSocketClient client = factory.newWebSocketClient();
 
-        connection = client.open(new URI(SERVER + "?user=" + userName + "&password=" + password), new org.eclipse.jetty.websocket.WebSocket.OnTextMessage() {
-            public void onOpen(Connection connection) {
-                System.out.println("Opened");
-            }
+            connection = client.open(new URI(SERVER + "?user=" + userName + "&password=" + password), new org.eclipse.jetty.websocket.WebSocket.OnTextMessage() {
+                public void onOpen(Connection connection) {
+                    System.out.println("Opened");
+                }
 
-            public void onClose(int closeCode, String message) {
-                System.out.println("Closed");
-            }
+                public void onClose(int closeCode, String message) {
+                    System.out.println("Closed");
+                }
 
-            public void onMessage(String data) {
-                parseMessage(data);
-                System.out.println(data);
+                public void onMessage(String data) {
+                    parseMessage(data);
+                    System.out.println(data);
 
-                if (userName.equals(mover)) {
-                    try {
-                        doAnswer();
-                    } catch (IOException e) {
-                        e.printStackTrace();
+                    if (userName.equals(mover)) {
+                        try {
+                            doAnswer();
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
                     }
                 }
-            }
-        }).get(500, TimeUnit.MILLISECONDS);
+            }).get(500, TimeUnit.MILLISECONDS);
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -75,6 +117,7 @@ public class Client {
         final int bet;
         final String status;
         final List<Card> cards;
+
         Player(String name, int balance, int bet, String status, List<Card> cards) {
             this.name = name;
             this.balance = balance;
@@ -83,7 +126,18 @@ public class Client {
             this.cards = cards;
         }
 
+        @Override
+        public String toString() {
+            return "Player{" +
+                    "name='" + name + '\'' +
+                    ", balance=" + balance +
+                    ", bet=" + bet +
+                    ", status='" + status + '\'' +
+                    ", cards=" + cards +
+                    '}';
+        }
     }
+
     List<Card> deskCards;
 
     int pot;
@@ -96,8 +150,13 @@ public class Client {
 
     String cardCombination;
 
+    private PreFlopGame preFlopGame = new PreFlopGame();
+
+    private PreFlopGame.STRATEGY preFlopStrategy = null;
+    private int preFlopMovedTimes = 0;
+
     public Client() {
-            con();
+        con();
     }
 
     public static void main(String[] args) {
@@ -191,6 +250,74 @@ public class Client {
     }
 
     private void doAnswer() throws IOException {
-        connection.sendMessage(Commands.AllIn.toString());
+        Player me = players.stream().filter(player -> player.name.equals(userName)).findFirst().get();
+
+        if (gameRound.equals("BLIND")) {
+
+            if (preFlopStrategy == null) {
+
+                int numberOfActivePlayer = (int) players.stream().filter(
+                        player -> !player.status.equals("Fold")
+                ).count();
+
+                int numberPlayerYetToAct = (int) players.stream().filter(
+                        player -> player.status.equals("NotMoved")
+                ).count();
+
+                preFlopStrategy = preFlopGame.getPreflopStrategy(
+                        new poki.handranking.Card[]{me.cards.get(0).toPokiCard(),
+                                me.cards.get(1).toPokiCard()},
+                        numberOfActivePlayer - numberPlayerYetToAct + 1,
+                        numberOfActivePlayer,
+                        numberPlayerYetToAct
+                );
+            }
+
+            System.out.println("For preflop choose strategy: " + preFlopStrategy);
+
+            switch (preFlopStrategy) {
+                case MAKE0:
+                    System.out.println("Got bad cards - folding");
+                    connection.sendMessage(Commands.Fold.toString());
+                    preFlopStrategy = null;
+                    preFlopMovedTimes = 0;
+                    break;
+                case MAKE1:
+                    if (preFlopMovedTimes == 0) {
+                        System.out.println("Got fine cards - call for the first time");
+                        connection.sendMessage(Commands.Call.toString());
+                        preFlopMovedTimes++;
+                    } else {
+                        System.out.println("Got fine cards, but not good enough to call twice - folding");
+                        connection.sendMessage(Commands.Fold.toString());
+                        preFlopStrategy = null;
+                        preFlopMovedTimes = 0;
+                    }
+                    break;
+                case MAKE2:
+                    if (preFlopMovedTimes < 2) {
+                        System.out.println("Got better cards - raise for the first two times");
+                        connection.sendMessage(Commands.Rise.toString());
+                        preFlopMovedTimes++;
+                    } else {
+                        System.out.println("Got better cards, but not good enough to continue raising - calling");
+                        connection.sendMessage(Commands.Call.toString());
+                    }
+                    break;
+                case MAKE4:
+                    System.out.println("Got the best card - raising all the time");
+                    connection.sendMessage(Commands.Rise.toString());
+                    preFlopMovedTimes++;
+                    break;
+            }
+
+
+        } else {
+            preFlopStrategy = null;
+            preFlopMovedTimes = 0;
+            System.out.println("Post flop stage - raising all the time");
+            connection.sendMessage(Commands.Rise.toString()+",10");
+        }
+
     }
 }

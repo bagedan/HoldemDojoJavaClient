@@ -28,5 +28,10 @@
             <artifactId>jetty-websocket</artifactId>
             <version>8.1.4.v20120524</version>
         </dependency>
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>20.0</version>
+        </dependency>
     </dependencies>
 </project>

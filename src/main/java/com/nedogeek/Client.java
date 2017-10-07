@@ -2,6 +2,7 @@ package com.nedogeek;
 
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import org.eclipse.jetty.websocket.WebSocketClient;
 import org.eclipse.jetty.websocket.WebSocketClientFactory;
 import org.json.JSONArray;
@@ -18,13 +19,12 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 
 public class Client {
-    private static final String userName = "bogdan2";
+    private static final String userName = "bogdan1";
     private static final String password = "somePassword";
 
     private static final String SERVER = "ws://localhost:8080/ws";
@@ -164,7 +164,7 @@ public class Client {
     private PreFlopGame.STRATEGY preFlopStrategy = PreFlopGame.STRATEGY.MAKE1;
     private int preFlopMovedTimes = 0;
 
-    double flopEHSCalculated = 0;
+    double ehsCalculated = 0;
 
     int numberOfRaisesInThisRoundByAll = 0;
     int numberOfRaisesToCall = 0;
@@ -280,20 +280,26 @@ public class Client {
     }
 
     private void doAnswer() throws IOException, HandRankingException {
-        Player me = players.stream().filter(player -> player.name.equals(userName)).findFirst().get();
-        System.out.println("There has been " + numberOfRaisesInThisRoundByAll + " in this round already");
-        System.out.println("There are " + numberOfRaisesToCall + " raises to call now");
-        if (gameRound.equals("BLIND")) {
-            flopEHSCalculated = 0;
-            doPreFlopMove(me);
-        }else if(gameRound.equals("THREE_CARDS")){
-            preFlopStrategy = null;
-            preFlopMovedTimes = 0;
+        try {
+            Player me = players.stream().filter(player -> player.name.equals(userName)).findFirst().get();
+            System.out.println("There has been " + numberOfRaisesInThisRoundByAll + " raises in this round already");
+            System.out.println("There are " + numberOfRaisesToCall + " raises to call now");
+            if (gameRound.equals("BLIND")) {
+                ehsCalculated = 0;
+                doPreFlopMove(me);
+            } else if (gameRound.equals("THREE_CARDS")) {
+                preFlopStrategy = null;
+                preFlopMovedTimes = 0;
 
-            doFlopMove(me);
+                doFlopMove(me);
 
-        } else {
-            doFlopMove(me);
+            } else if (gameRound.equals("FOUR_CARDS")) {
+                doTurnMove(me);
+            } else {
+                doRiverMove(me);
+            }
+        } catch (Throwable th){
+            System.out.println(th);
         }
 
 
@@ -301,16 +307,13 @@ public class Client {
 
     }
 
-    private void doFlopMove(Player me) throws HandRankingException, IOException {
-
-        if(flopEHSCalculated == 0){
-            System.out.println("Calculating esh...");
-            flopEHSCalculated = calculateFlopESH(me);
-        }
+    private void doRiverMove(Player me) throws HandRankingException, IOException {
+        System.out.println("Calculating esh...");
+        ehsCalculated = calculateESH(me);
         int betsToMakeInThisRound = 0;
-        if(flopEHSCalculated >= 0.85){
+        if(ehsCalculated >= 0.85){
             betsToMakeInThisRound = 2;
-        } else if(flopEHSCalculated >=0.5){
+        } else if(ehsCalculated >=0.5){
             betsToMakeInThisRound = 1;
         }
 
@@ -325,7 +328,7 @@ public class Client {
         } else if(numberOfMyBetsPutInInThisRound > 0 ||
                 betsToMakeInThisRound >=2 ||
                 numberOfRaisesToCall <= betsToMakeInThisRound){
-            System.out.println("Have raised already - from now on only calling");
+            System.out.println("Not confident enough to raise - from now on only calling");
             connection.sendMessage(Commands.Call.toString());
         } else {
             System.out.println("Too many raises - fold");
@@ -333,23 +336,93 @@ public class Client {
         }
     }
 
-    private double calculateFlopESH(Player me) throws HandRankingException {
+    private void doFlopMove(Player me) throws HandRankingException, IOException {
+
+        if(ehsCalculated == 0){
+            System.out.println("Calculating esh...");
+            ehsCalculated = calculateESH(me);
+        }
+        int betsToMakeInThisRound = 0;
+        if(ehsCalculated >= 0.85){
+            betsToMakeInThisRound = 2;
+        } else if(ehsCalculated >=0.5){
+            betsToMakeInThisRound = 1;
+        }
+
+        System.out.println("betsToMakeInThisRound is " + betsToMakeInThisRound);
+        System.out.println("numberOfRaisesInThisRoundByAll is " + numberOfRaisesInThisRoundByAll);
+        System.out.println("numberOfRaisesToCall is " + numberOfRaisesToCall);
+        System.out.println("numberOfMyBetsPutInInThisRound is " + numberOfMyBetsPutInInThisRound);
+        if(numberOfRaisesInThisRoundByAll < betsToMakeInThisRound){
+            System.out.println("My cards look good - raising");
+            connection.sendMessage(Commands.Rise.toString());
+            numberOfMyBetsPutInInThisRound++;
+        } else if(numberOfMyBetsPutInInThisRound > 0 ||
+                betsToMakeInThisRound >=2 ||
+                numberOfRaisesToCall <= betsToMakeInThisRound){
+            System.out.println("Not confident enough to raise - from now on only calling");
+            connection.sendMessage(Commands.Call.toString());
+        } else {
+            System.out.println("Too many raises - fold");
+            connection.sendMessage(Commands.Fold.toString());
+        }
+    }
+
+    private void doTurnMove(Player me) throws HandRankingException, IOException {
+
+        System.out.println("Calculating esh...");
+        ehsCalculated = calculateESH(me);
+        int betsToMakeInThisRound = 0;
+        if(ehsCalculated >= 0.85){
+            betsToMakeInThisRound = 2;
+        } else if(ehsCalculated >=0.5){
+            betsToMakeInThisRound = 1;
+        }
+
+        System.out.println("betsToMakeInThisRound is " + betsToMakeInThisRound);
+        System.out.println("numberOfRaisesInThisRoundByAll is " + numberOfRaisesInThisRoundByAll);
+        System.out.println("numberOfRaisesToCall is " + numberOfRaisesToCall);
+        System.out.println("numberOfMyBetsPutInInThisRound is " + numberOfMyBetsPutInInThisRound);
+        if(numberOfRaisesInThisRoundByAll < betsToMakeInThisRound){
+            System.out.println("My cards look good - raising");
+            connection.sendMessage(Commands.Rise.toString());
+            numberOfMyBetsPutInInThisRound++;
+        } else if(numberOfMyBetsPutInInThisRound > 0 ||
+                betsToMakeInThisRound >=2 ||
+                numberOfRaisesToCall <= betsToMakeInThisRound){
+            System.out.println("Not confident enough to raise - from now on only calling");
+            connection.sendMessage(Commands.Call.toString());
+        } else {
+            System.out.println("Too many raises - fold");
+            connection.sendMessage(Commands.Fold.toString());
+        }
+    }
+
+    private double calculateESH(Player me) throws HandRankingException {
         List<List<Double>> weightArray = HandRanker.getUniformWeightArray();
-        GameState postFlopGameState = new GameState();
+        GameState gameState = new GameState();
         Deck deck = new Deck();
 
-        Set<poki.handranking.Card> flop = deskCards.stream()
-                .map(card -> card.toPokiCard()).collect(Collectors.toSet());
-        postFlopGameState.setFlop(flop);
+        List<poki.handranking.Card> deskPokiCards = deskCards.stream()
+                .map(card -> card.toPokiCard()).collect(Collectors.toList());
+        gameState.setFlop(ImmutableSet.of(deskPokiCards.get(0), deskPokiCards.get(1), deskPokiCards.get(2)));
 
-        deck.removeCards(flop);
+        if(deskPokiCards.size()>3){
+            gameState.setTurn(deskPokiCards.get(3));
+        }
+
+        if(deskPokiCards.size()>4){
+            gameState.setRiver(deskPokiCards.get(4));
+        }
+
+        deck.removeCards(deskPokiCards);
 
 
         deck.removeCard(me.cards.get(0).toPokiCard());
         deck.removeCard(me.cards.get(1).toPokiCard());
 
-        poki.Player pokiPlayer = new poki.Player(me.cards.get(0).toPokiCard(),
-                me.cards.get(1).toPokiCard(), postFlopGameState);
+        poki.PlayerLoki pokiPlayer = new poki.PlayerLoki(me.cards.get(0).toPokiCard(),
+                me.cards.get(1).toPokiCard(), gameState);
 
         int numberOfActivePlayer = (int) players.stream().filter(
                 player -> !player.status.equals("Fold")
@@ -359,14 +432,12 @@ public class Client {
 
         long start = System.currentTimeMillis();
         System.out.println(Instant.now());
-        pokiPlayer.calculateHandStrength(weightArray, numberOfActivePlayer, remainingCards);
-        System.out.println(Instant.now());
 
-        pokiPlayer.calculateHandPotential(weightArray, numberOfActivePlayer, true, remainingCards);
+        pokiPlayer.calculateHandStatistics(weightArray, numberOfActivePlayer, remainingCards);
         long end = System.currentTimeMillis();
         System.out.println(Instant.now());
 
-        System.out.println("Time: " + (end - start));
+        System.out.println("Time to calculate ehs: " + (end - start));
 
         //not including negative potentials here
         double EHS_optimistic = pokiPlayer.getHandStrength() +
@@ -377,7 +448,7 @@ public class Client {
     }
 
     private void doPreFlopMove(Player me) throws IOException {
-        preFlopStrategy = PreFlopGame.STRATEGY.MAKE2;
+//        preFlopStrategy = PreFlopGame.STRATEGY.MAKE2;
         if (preFlopStrategy == null) {
 
             int numberOfActivePlayer = (int) players.stream().filter(

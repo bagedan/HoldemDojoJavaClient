@@ -24,11 +24,12 @@ import java.util.stream.Collectors;
 
 
 public class Client {
-    private static final String userName = "bogdan1";
+    private static final String userName = "bogdan4";
     private static final String password = "somePassword";
 
     private static final String SERVER = "ws://localhost:8080/ws";
     private org.eclipse.jetty.websocket.WebSocket.Connection connection;
+    private double[] currentRoundEhs;
 
     enum Commands {
         Check, Call, Rise, Fold, AllIn
@@ -123,14 +124,14 @@ public class Client {
 
         final String name;
         final int balance;
-        final int bet;
+        final int pot;
         final String status;
         final List<Card> cards;
 
-        Player(String name, int balance, int bet, String status, List<Card> cards) {
+        Player(String name, int balance, int pot, String status, List<Card> cards) {
             this.name = name;
             this.balance = balance;
-            this.bet = bet;
+            this.pot = pot;
             this.status = status;
             this.cards = cards;
         }
@@ -140,7 +141,7 @@ public class Client {
             return "Player{" +
                     "name='" + name + '\'' +
                     ", balance=" + balance +
-                    ", bet=" + bet +
+                    ", pot=" + pot +
                     ", status='" + status + '\'' +
                     ", cards=" + cards +
                     '}';
@@ -149,7 +150,7 @@ public class Client {
 
     List<Card> deskCards;
 
-    int pot;
+    int deskPot;
     String gameRound;
 
     String dealer;
@@ -164,12 +165,19 @@ public class Client {
     private PreFlopGame.STRATEGY preFlopStrategy = PreFlopGame.STRATEGY.MAKE1;
     private int preFlopMovedTimes = 0;
 
-    double ehsCalculated = 0;
-
     int numberOfRaisesInThisRoundByAll = 0;
     int numberOfRaisesToCall = 0;
     int numberOfMyBetsPutInInThisRound = 0;
     String prevRound = "";
+
+    int EHS_OPTIMISTIC_INDEX = 0;
+    int EHS_FULL_INDEX = 1;
+    int PPOT_INDEX = 2;
+
+
+    int SMALL_BLIND = 1;
+
+    boolean semiBlufFlag = false;
 
     public Client() {
         con();
@@ -183,7 +191,7 @@ public class Client {
         JSONObject json = new JSONObject(message);
 
         if (json.has("deskPot")) {
-            pot = json.getInt("deskPot");
+            deskPot = json.getInt("deskPot");
         }
         if (json.has("mover")) {
             mover = json.getString("mover");
@@ -209,10 +217,10 @@ public class Client {
             cardCombination = json.getString("combination");
         }
 
-        if(prevRound.equals(gameRound)) {
+        if (prevRound.equals(gameRound)) {
             if (event.get(0).contains("makes bet")) {
                 numberOfRaisesInThisRoundByAll++;
-                if(!event.contains(userName)){
+                if (!event.contains(userName)) {
                     numberOfRaisesToCall++;
                 }
             }
@@ -221,6 +229,7 @@ public class Client {
             numberOfRaisesInThisRoundByAll = 0;
             numberOfRaisesToCall = 0;
             numberOfMyBetsPutInInThisRound = 0;
+            currentRoundEhs = null;
         }
     }
 
@@ -239,7 +248,7 @@ public class Client {
         for (int i = 0; i < playersJSON.length(); i++) {
             JSONObject playerJSON = (JSONObject) playersJSON.get(i);
             int balance = 0;
-            int bet = 0;
+            int pot = 0;
             String status = "";
             String name = "";
             List<Card> cards = new ArrayList<>();
@@ -248,7 +257,7 @@ public class Client {
                 balance = playerJSON.getInt("balance");
             }
             if (playerJSON.has("pot")) {
-                bet = playerJSON.getInt("pot");
+                pot = playerJSON.getInt("pot");
             }
             if (playerJSON.has("status")) {
                 status = playerJSON.getString("status");
@@ -260,7 +269,7 @@ public class Client {
                 cards = parseCards((JSONArray) playerJSON.get("cards"));
             }
 
-            players.add(new Player(name, balance, bet, status, cards));
+            players.add(new Player(name, balance, pot, status, cards));
         }
 
         return players;
@@ -282,23 +291,19 @@ public class Client {
     private void doAnswer() throws IOException, HandRankingException {
         try {
             Player me = players.stream().filter(player -> player.name.equals(userName)).findFirst().get();
+            System.out.println("My cards: " + me.cards.get(0).suit+":"+me.cards.get(0).value + " and " + me.cards.get(1).suit+":"+me.cards.get(1).value );
             System.out.println("There has been " + numberOfRaisesInThisRoundByAll + " raises in this round already");
             System.out.println("There are " + numberOfRaisesToCall + " raises to call now");
             if (gameRound.equals("BLIND")) {
-                ehsCalculated = 0;
+                semiBlufFlag = false;
                 doPreFlopMove(me);
-            } else if (gameRound.equals("THREE_CARDS")) {
+            } else {
                 preFlopStrategy = null;
                 preFlopMovedTimes = 0;
 
-                doFlopMove(me);
-
-            } else if (gameRound.equals("FOUR_CARDS")) {
-                doTurnMove(me);
-            } else {
-                doRiverMove(me);
+                doPostFlopMove(me);
             }
-        } catch (Throwable th){
+        } catch (Throwable th) {
             System.out.println(th);
         }
 
@@ -307,59 +312,103 @@ public class Client {
 
     }
 
-    private void doRiverMove(Player me) throws HandRankingException, IOException {
-        System.out.println("Calculating esh...");
-        ehsCalculated = calculateESH(me);
-        int betsToMakeInThisRound = 0;
-        if(ehsCalculated >= 0.85){
-            betsToMakeInThisRound = 2;
-        } else if(ehsCalculated >=0.5){
-            betsToMakeInThisRound = 1;
-        }
-
-        System.out.println("betsToMakeInThisRound is " + betsToMakeInThisRound);
-        System.out.println("numberOfRaisesInThisRoundByAll is " + numberOfRaisesInThisRoundByAll);
-        System.out.println("numberOfRaisesToCall is " + numberOfRaisesToCall);
-        System.out.println("numberOfMyBetsPutInInThisRound is " + numberOfMyBetsPutInInThisRound);
-        if(numberOfRaisesInThisRoundByAll < betsToMakeInThisRound){
-            System.out.println("My cards look good - raising");
-            connection.sendMessage(Commands.Rise.toString());
-            numberOfMyBetsPutInInThisRound++;
-        } else if(numberOfMyBetsPutInInThisRound > 0 ||
-                betsToMakeInThisRound >=2 ||
-                numberOfRaisesToCall <= betsToMakeInThisRound){
-            System.out.println("Not confident enough to raise - from now on only calling");
-            connection.sendMessage(Commands.Call.toString());
-        } else {
-            System.out.println("Too many raises - fold");
-            connection.sendMessage(Commands.Fold.toString());
-        }
-    }
-
-    private void doFlopMove(Player me) throws HandRankingException, IOException {
-
-        if(ehsCalculated == 0){
+    private void doPostFlopMove(Player me) throws HandRankingException, IOException {
+        if(currentRoundEhs == null) {
             System.out.println("Calculating esh...");
-            ehsCalculated = calculateESH(me);
-        }
-        int betsToMakeInThisRound = 0;
-        if(ehsCalculated >= 0.85){
-            betsToMakeInThisRound = 2;
-        } else if(ehsCalculated >=0.5){
-            betsToMakeInThisRound = 1;
+            currentRoundEhs = calculateHandStrengthAndPotentials(me);
         }
 
+        double ehsOptimisticCalculated = currentRoundEhs[EHS_OPTIMISTIC_INDEX];
+        if (ehsOptimisticCalculated >= 0.85) {
+            System.out.println("Cards are great! Going to do at two raises in this round");
+            doRaisingMove(2);
+            return;
+        } else if (ehsOptimisticCalculated >= 0.5) {
+            System.out.println("Cards are fine. Going to do max one raises in this round");
+            doRaisingMove(1);
+            return;
+        }
+
+        System.out.println("Cards are not good enough to raise - checking other options");
+        if (numberOfRaisesToCall == 0) {
+            System.out.println("Nobody raised yet - may be worth to do some bluffing");
+            doSemiBluffMove(me, currentRoundEhs[PPOT_INDEX]);
+            return;
+        } else {
+            System.out.println("Someone raised already - checking pot and showdown odds");
+            doPotAndShowDownOddsMove(me, currentRoundEhs[EHS_FULL_INDEX], currentRoundEhs[PPOT_INDEX]);
+        }
+    }
+
+    private void doPotAndShowDownOddsMove(Player me, double ehs_full, double PPOT) throws IOException {
+        int maxPotSoFar = players.stream().map(player -> player.pot).max(Integer::compareTo).get();
+        int betsToCall = maxPotSoFar - me.pot;
+
+        double potOdds = betsToCall / (deskPot + betsToCall);
+
+        if ((gameRound.equals("FIVE_CARDS") && ehs_full >= potOdds) ||
+                (!gameRound.equals("FIVE_CARDS") && PPOT >= potOdds)) {
+            System.out.println("Calling based on pots odds");
+            connection.sendMessage(Commands.Call.toString());
+            return;
+        }
+
+        if (gameRound.equals("FIVE_CARDS")) {
+            connection.sendMessage(Commands.Fold.toString());
+            return;
+        }
+
+        if (gameRound.equals("THREE_CARDS")) {
+            connection.sendMessage(Commands.Fold.toString());
+            return;
+        }
+
+        int showDownCost = 0;
+
+        if (gameRound.equals("THREE_CARDS")) {
+            showDownCost = betSize() * 4;
+        } else {
+            showDownCost = betSize();
+        }
+
+        double showDownOdds = (betsToCall + showDownCost)/(deskPot + betsToCall + 2*showDownCost);
+
+        if(ehs_full >= showDownOdds){
+            System.out.println("Calling based on showdown odds");
+            connection.sendMessage(Commands.Call.toString());
+            return;
+        }
+
+        connection.sendMessage(Commands.Fold.toString());
+    }
+
+    private void doSemiBluffMove(Player me, double PPOT) throws IOException {
+        int betSize = betSize();
+
+        float potOdds = 2 * betSize / (deskPot + 6 * betSize);
+        if (semiBlufFlag || (gameRound.equals("THREE_CARDS") && PPOT >= potOdds)) {
+            semiBlufFlag = true;
+            System.out.println("Decided to do semi bluffing as nobody raise and cards are not so bad");
+            connection.sendMessage(Commands.Rise.toString());
+        } else {
+            System.out.println("Cards are not good enough to go for bluffing - just checking");
+            connection.sendMessage(Commands.Check.toString());
+        }
+
+    }
+
+    private void doRaisingMove(int betsToMakeInThisRound) throws IOException {
         System.out.println("betsToMakeInThisRound is " + betsToMakeInThisRound);
         System.out.println("numberOfRaisesInThisRoundByAll is " + numberOfRaisesInThisRoundByAll);
         System.out.println("numberOfRaisesToCall is " + numberOfRaisesToCall);
         System.out.println("numberOfMyBetsPutInInThisRound is " + numberOfMyBetsPutInInThisRound);
-        if(numberOfRaisesInThisRoundByAll < betsToMakeInThisRound){
+        if (numberOfRaisesInThisRoundByAll < betsToMakeInThisRound) {
             System.out.println("My cards look good - raising");
             connection.sendMessage(Commands.Rise.toString());
             numberOfMyBetsPutInInThisRound++;
-        } else if(numberOfMyBetsPutInInThisRound > 0 ||
-                betsToMakeInThisRound >=2 ||
-                numberOfRaisesToCall <= betsToMakeInThisRound){
+        } else if (numberOfMyBetsPutInInThisRound > 0 ||
+                betsToMakeInThisRound >= 2 ||
+                numberOfRaisesToCall <= betsToMakeInThisRound) {
             System.out.println("Not confident enough to raise - from now on only calling");
             connection.sendMessage(Commands.Call.toString());
         } else {
@@ -368,37 +417,7 @@ public class Client {
         }
     }
 
-    private void doTurnMove(Player me) throws HandRankingException, IOException {
-
-        System.out.println("Calculating esh...");
-        ehsCalculated = calculateESH(me);
-        int betsToMakeInThisRound = 0;
-        if(ehsCalculated >= 0.85){
-            betsToMakeInThisRound = 2;
-        } else if(ehsCalculated >=0.5){
-            betsToMakeInThisRound = 1;
-        }
-
-        System.out.println("betsToMakeInThisRound is " + betsToMakeInThisRound);
-        System.out.println("numberOfRaisesInThisRoundByAll is " + numberOfRaisesInThisRoundByAll);
-        System.out.println("numberOfRaisesToCall is " + numberOfRaisesToCall);
-        System.out.println("numberOfMyBetsPutInInThisRound is " + numberOfMyBetsPutInInThisRound);
-        if(numberOfRaisesInThisRoundByAll < betsToMakeInThisRound){
-            System.out.println("My cards look good - raising");
-            connection.sendMessage(Commands.Rise.toString());
-            numberOfMyBetsPutInInThisRound++;
-        } else if(numberOfMyBetsPutInInThisRound > 0 ||
-                betsToMakeInThisRound >=2 ||
-                numberOfRaisesToCall <= betsToMakeInThisRound){
-            System.out.println("Not confident enough to raise - from now on only calling");
-            connection.sendMessage(Commands.Call.toString());
-        } else {
-            System.out.println("Too many raises - fold");
-            connection.sendMessage(Commands.Fold.toString());
-        }
-    }
-
-    private double calculateESH(Player me) throws HandRankingException {
+    private double[] calculateHandStrengthAndPotentials(Player me) throws HandRankingException {
         List<List<Double>> weightArray = HandRanker.getUniformWeightArray();
         GameState gameState = new GameState();
         Deck deck = new Deck();
@@ -407,11 +426,11 @@ public class Client {
                 .map(card -> card.toPokiCard()).collect(Collectors.toList());
         gameState.setFlop(ImmutableSet.of(deskPokiCards.get(0), deskPokiCards.get(1), deskPokiCards.get(2)));
 
-        if(deskPokiCards.size()>3){
+        if (deskPokiCards.size() > 3) {
             gameState.setTurn(deskPokiCards.get(3));
         }
 
-        if(deskPokiCards.size()>4){
+        if (deskPokiCards.size() > 4) {
             gameState.setRiver(deskPokiCards.get(4));
         }
 
@@ -443,8 +462,18 @@ public class Client {
         double EHS_optimistic = pokiPlayer.getHandStrength() +
                 (1 - pokiPlayer.getHandStrength()) * pokiPlayer.getPositiveHandPotential();
 
-        System.out.println("EHS is " + EHS_optimistic);
-        return EHS_optimistic;
+        double EHS_full = pokiPlayer.getHandStrength() +
+                (1 - pokiPlayer.getHandStrength()) * pokiPlayer.getPositiveHandPotential() -
+                -pokiPlayer.getHandStrength() * pokiPlayer.getNegativeHandPotential();
+
+        System.out.println("EHS_opt is " + EHS_optimistic);
+        System.out.println("EHS_full is " + EHS_full);
+        double[] result = new double[3];
+        result[EHS_OPTIMISTIC_INDEX] = EHS_optimistic;
+        result[EHS_FULL_INDEX] = EHS_full;
+        result[PPOT_INDEX] = pokiPlayer.getPositiveHandPotential();
+
+        return result;
     }
 
     private void doPreFlopMove(Player me) throws IOException {
@@ -506,5 +535,11 @@ public class Client {
                 break;
         }
 
+    }
+
+    private int betSize(){
+        int maxPotSoFar = players.stream().map(player -> player.pot).max(Integer::compareTo).get();
+        int betSize = 2 * SMALL_BLIND + maxPotSoFar;
+        return betSize;
     }
 }
